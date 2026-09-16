@@ -1,0 +1,26 @@
+bash.exe: warning: could not find /tmp, please create!
+__pycache__/
+*.py[cod]
+*.egg-info/
+.pytest_cache/
+.coverage
+htmlcov/
+.venv/
+.doctor-home/
+.pip-cache-test/
+.runtime-test/
+.tmp-build/
+.wheel-test/
+dist/
+build/
+logs/
+backups/
+runtime-data/*
+!runtime-data/.gitkeep
+scripts/*.vbs
+*.bak
+*.tmp
+*.tmp-*
+*.jsonl
+*.log
+*.log.*

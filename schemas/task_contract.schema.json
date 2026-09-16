@@ -1,0 +1,30 @@
+{
+  "$schema": "https://json-schema.org/draft/2020-12/schema",
+  "$id": "adaptive-task-protocol/task-contract/1.0",
+  "type": "object",
+  "required": ["protocol_version", "task_id", "mode", "objective", "workspace", "state", "todo", "acceptance_criteria"],
+  "properties": {
+    "protocol_version": {"const": "1.0"},
+    "contract_version": {"type": "integer", "minimum": 1},
+    "task_id": {"type": "string", "minLength": 1},
+    "mode": {"enum": ["chat", "operation", "project"]},
+    "objective": {"type": "string", "minLength": 1},
+    "non_goals": {"type": "array", "items": {"type": "string", "minLength": 1}},
+    "workspace": {
+      "type": "object",
+      "required": ["path", "revision"],
+      "properties": {
+        "path": {"type": "string", "minLength": 1},
+        "revision": {"type": "string", "minLength": 1}
+      },
+      "additionalProperties": false
+    },
+    "todo": {"type": "array", "items": {"type": "object", "required": ["id", "title", "depends_on", "verification"]}},
+    "acceptance_criteria": {"type": "array", "items": {"type": "object", "required": ["id", "description", "kind", "verifier", "required_evidence"]}},
+    "state": {"enum": ["CREATED", "PLANNING", "READY", "EXECUTING", "SELF_CHECK", "REVIEWING", "REWORK_REQUIRED", "BLOCKED", "GATE_PASSED", "CLOSED", "CANCELLED"]},
+    "created_by": {"type": "string"},
+    "created_at": {"type": "string"},
+    "plan_id": {"type": ["string", "null"]}
+  }
+}
+

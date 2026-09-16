@@ -1,0 +1,26 @@
+name: adaptive-task-protocol
+version: 0.1.0
+manifest_version: 2
+api_version: 1
+description: "Evidence-gated Project task protocol Bridge for a local Adaptive Runtime."
+author: "Adaptive Task Protocol Runtime contributors"
+license: MIT
+tags: [workflow, project, verification, local]
+provides_tools:
+  - adaptive_task_start
+  - adaptive_task_bind
+  - adaptive_task_event
+  - adaptive_task_submit_evidence
+  - adaptive_task_evaluate
+  - adaptive_task_close
+  - adaptive_task_snapshot
+provides_hooks:
+  - pre_llm_call
+  - pre_tool_call
+  - post_tool_call
+config_schema:
+  runtime_url: {type: str, default: "http://127.0.0.1:8790", description: "Loopback Adaptive Runtime URL"}
+  token_file: {type: str, default: "", description: "Path to the Runtime bearer token file"}
+  request_timeout: {type: float, default: 5.0, description: "Runtime HTTP request timeout"}
+  subagent_wait_timeout: {type: float, default: 600.0, description: "Planner/Judge wait timeout"}
+

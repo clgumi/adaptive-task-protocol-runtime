@@ -1,0 +1,15 @@
+{
+  "$schema": "https://json-schema.org/draft/2020-12/schema",
+  "$id": "adaptive-task-protocol/gate-result/1.0",
+  "type": "object",
+  "required": ["protocol_version", "task_id", "passed", "state", "criteria", "blocking_criteria", "evaluated_at"],
+  "properties": {
+    "protocol_version": {"const": "1.0"},
+    "task_id": {"type": "string", "minLength": 1},
+    "passed": {"type": "boolean"},
+    "state": {"enum": ["REWORK_REQUIRED", "BLOCKED", "GATE_PASSED", "CLOSED"]},
+    "criteria": {"type": "array", "items": {"type": "object", "required": ["id", "status", "evidence_refs"]}},
+    "blocking_criteria": {"type": "array", "items": {"type": "string"}},
+    "evaluated_at": {"type": "string", "minLength": 1}
+  }
+}

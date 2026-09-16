@@ -1,0 +1,21 @@
+{
+  "$schema": "https://json-schema.org/draft/2020-12/schema", "$id": "adaptive-task-protocol/planner-output/1.0", "type": "object",
+  "required": ["protocol_version", "objective", "non_goals", "todo", "acceptance_criteria", "ambiguities", "needs_human"],
+  "properties": {
+    "protocol_version": {"const": "1.0"}, "objective": {"type": "string", "minLength": 1},
+    "non_goals": {"type": "array", "items": {"type": "string", "minLength": 1}},
+    "todo": {"type": "array", "minItems": 1, "items": {"type": "object", "required": ["id", "title", "depends_on", "verification"], "properties": {
+      "id": {"type": "string", "minLength": 1}, "title": {"type": "string", "minLength": 1},
+      "depends_on": {"type": "array", "items": {"type": "string"}}, "verification": {"type": "string"}
+    }}},
+    "acceptance_criteria": {"type": "array", "minItems": 1, "items": {"type": "object", "required": ["id", "description", "kind", "verifier", "required_evidence"], "properties": {
+      "id": {"type": "string", "minLength": 1}, "description": {"type": "string", "minLength": 1},
+      "kind": {"enum": ["machine_verifiable", "semantic", "visual"]}, "verifier": {"type": "object", "required": ["type"]},
+      "required_evidence": {"type": "array", "items": {"type": "string"}}, "required": {"type": "boolean"},
+      "status": {"enum": ["PASS", "FAIL", "NOT_RUN", "BLOCKED", "WAIVED", "PASS_UNVERIFIED"]},
+      "waiver": {"type": "object", "required": ["reason", "approved_by"]}
+    }}},
+    "ambiguities": {"type": "array", "items": {"type": "string"}}, "needs_human": {"type": "boolean"}
+  }
+}
+

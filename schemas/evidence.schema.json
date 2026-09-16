@@ -1,0 +1,24 @@
+{
+  "$schema": "https://json-schema.org/draft/2020-12/schema",
+  "$id": "adaptive-task-protocol/evidence/1.0",
+  "type": "object",
+  "required": ["protocol_version", "evidence_id", "task_id", "criterion_id", "type", "workspace_revision", "produced_at", "producer"],
+  "properties": {
+    "protocol_version": {"const": "1.0"},
+    "evidence_id": {"type": "string", "minLength": 1},
+    "task_id": {"type": "string", "minLength": 1},
+    "criterion_id": {"type": "string", "minLength": 1},
+    "type": {"type": "string", "minLength": 1},
+    "command": {"type": ["string", "null"]},
+    "exit_code": {"type": ["integer", "null"]},
+    "workspace_revision": {"type": "string", "minLength": 1},
+    "artifact_path": {"type": ["string", "null"]},
+    "artifact_sha256": {"type": ["string", "null"], "pattern": "^[a-fA-F0-9]{64}$"},
+    "produced_at": {"type": "string", "minLength": 1},
+    "producer": {"type": "string", "minLength": 1},
+    "metadata": {"type": "object"},
+    "status": {"enum": ["pending", "verified", "invalid", "stale"]},
+    "validation_message": {"type": ["string", "null"]}
+  }
+}
+

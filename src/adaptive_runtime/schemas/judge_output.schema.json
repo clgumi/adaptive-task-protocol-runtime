@@ -1,0 +1,15 @@
+{
+  "$schema": "https://json-schema.org/draft/2020-12/schema", "$id": "adaptive-task-protocol/judge-output/1.0", "type": "object",
+  "required": ["protocol_version", "task_id", "overall", "criteria", "needs_human"],
+  "properties": {
+    "protocol_version": {"const": "1.0"}, "task_id": {"type": "string", "minLength": 1},
+    "overall": {"enum": ["PASS", "REWORK_REQUIRED", "BLOCKED"]}, "needs_human": {"type": "boolean"},
+    "criteria": {"type": "array", "items": {"type": "object", "required": ["id", "status", "reason", "evidence_refs", "rework_items", "confidence"], "properties": {
+      "id": {"type": "string", "minLength": 1}, "status": {"enum": ["PASS", "FAIL", "NOT_RUN", "BLOCKED"]},
+      "reason": {"type": "string", "minLength": 1}, "evidence_refs": {"type": "array", "items": {"type": "string", "minLength": 1}},
+      "rework_items": {"type": "array", "items": {"type": "string", "minLength": 1}},
+      "confidence": {"type": "number", "minimum": 0, "maximum": 1}
+    }}}
+  }
+}
+
