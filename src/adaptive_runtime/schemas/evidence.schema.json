@@ -8,7 +8,9 @@
     "exit_code": {"type": ["integer", "null"]}, "workspace_revision": {"type": "string", "minLength": 1},
     "artifact_path": {"type": ["string", "null"]}, "artifact_sha256": {"type": ["string", "null"], "pattern": "^[a-fA-F0-9]{64}$"},
     "produced_at": {"type": "string", "minLength": 1}, "producer": {"type": "string", "minLength": 1},
-    "metadata": {"type": "object"}, "status": {"enum": ["pending", "verified", "invalid", "stale"]},
+    "metadata": {"type": "object"},
+    "plan_id": {"type": ["string", "null"]},
+    "contract_version": {"type": ["integer", "null"], "minimum": 1}, "status": {"enum": ["pending", "verified", "invalid", "stale"]},
     "validation_message": {"type": ["string", "null"]}
   }
 }

@@ -20,7 +20,7 @@ from .classifier import Mode
 from .runtime_client import RuntimeClient
 from .routing import RoutingSubagent
 from .subagent_adapter import SubagentAdapter
-from .tool_schemas import BIND, CLOSE, EVALUATE, EVENT, EVIDENCE, SNAPSHOT, START
+from .tool_schemas import BIND, CLOSE, EVALUATE, EVENT, EVIDENCE, PLAN, SNAPSHOT, START
 from .workspace_revision import compute_workspace_revision
 
 
@@ -49,6 +49,26 @@ def _repo_token_file(ctx: Any) -> Path:
     return Path(__file__).resolve().parents[1] / "runtime-data" / "auth-token"
 
 
+def _normalized_scope_text(value: Any) -> str:
+    return " ".join(str(value or "").split())
+
+
+def _same_task_scope(task: dict[str, Any], args: dict[str, Any]) -> bool:
+    """Idempotency is valid only for the same objective, workspace, and non-goals."""
+    try:
+        task_workspace = os.path.normcase(os.path.normpath(str(Path(task["workspace"]["path"]).expanduser().resolve())))
+        requested_workspace = os.path.normcase(os.path.normpath(str(Path(args["workspace"]).expanduser().resolve())))
+    except (KeyError, TypeError, ValueError, OSError):
+        return False
+    task_non_goals = sorted(_normalized_scope_text(item).casefold() for item in task.get("non_goals", []))
+    requested_non_goals = sorted(_normalized_scope_text(item).casefold() for item in args.get("non_goals", []))
+    return (
+        _normalized_scope_text(task.get("objective")) == _normalized_scope_text(args.get("objective"))
+        and task_workspace == requested_workspace
+        and task_non_goals == requested_non_goals
+    )
+
+
 def register(ctx: Any) -> None:
     base_url = str(ctx.get_config("runtime_url", os.getenv("ADAPTIVE_RUNTIME_URL", "http://127.0.0.1:8790")))
     timeout = float(ctx.get_config("request_timeout", 5.0))
@@ -65,9 +85,33 @@ def register(ctx: Any) -> None:
                 _log_event("task_start_blocked", reason="safe_routing_fallback", has_task_id=False)
                 return _json({"task_id": None, "state": "BLOCKED", "writes_allowed": False,
                               "error": {"code": "SAFE_ROUTING_FALLBACK", "message": "Semantic routing is read-only."}})
-            if binding and binding.task_id:
+            if binding and binding.task_id and not bool(args.get("new_task")):
                 snapshot = client.snapshot(binding.task_id)
                 task = snapshot["task"]
+                state = task.get("state")
+                if not _same_task_scope(task, args):
+                    _log_event("task_start_scope_mismatch", task_id=binding.task_id, state=state)
+                    return _json({
+                        "task_id": binding.task_id,
+                        "state": state,
+                        "idempotent": False,
+                        "writes_allowed": False,
+                        "error": {
+                            "code": "TASK_SCOPE_MISMATCH",
+                            "message": "The bound task has a different objective, workspace, or non-goals. Re-call adaptive_task_start with new_task=true to create a separate scoped task; the existing task will remain unchanged.",
+                        },
+                    })
+                if state in {"CLOSED", "CANCELLED"}:
+                    return _json({
+                        "task_id": binding.task_id,
+                        "state": state,
+                        "idempotent": False,
+                        "writes_allowed": False,
+                        "error": {
+                            "code": "TASK_NOT_REUSABLE",
+                            "message": "A closed or cancelled task cannot be reused. Re-call adaptive_task_start with new_task=true.",
+                        },
+                    })
                 _log_event("task_start_idempotent", task_id=binding.task_id, state=task.get("state"), has_task_id=True)
                 return _json({
                     "task_id": binding.task_id,
@@ -95,6 +139,7 @@ def register(ctx: Any) -> None:
                 Mode.PROJECT,
                 task_id=task_id,
                 workspace=workspace,
+                workspace_revision=revision,
                 project_state=ProjectState.ACTIVE,
                 classification_source=binding.classification_source if binding else "explicit_tool",
                 classification_confidence=binding.classification_confidence if binding else 1.0,
@@ -114,14 +159,24 @@ def register(ctx: Any) -> None:
             state = snapshot["task"]["state"]
             _log_event("task_start", task_id=task_id, state=state, has_task_id=True)
             return _json({"task_id": task_id, "state": state, "plan_id": snapshot["task"].get("plan_id"),
-                          "planner": planned, "writes_allowed": state == "READY"})
+                          "planner": planned, "writes_allowed": state == "READY",
+                          "idempotent": False, "replaced_binding_task_id": binding.task_id if binding and binding.task_id else None})
         except Exception as exc:
             _log_event("task_start_blocked", reason=type(exc).__name__, has_task_id=bool(binding and binding.task_id))
             if session_id:
-                if binding:
-                    sessions.update(session_id, revision_sync_error=f"Project initialization failed: {exc}")
-                else:
-                    sessions.set(session_id, SessionBinding(Mode.PROJECT, revision_sync_error=f"Project initialization failed: {exc}"))
+                current_binding = sessions.get(session_id)
+                preserve_old_binding = bool(
+                    args.get("new_task")
+                    and binding
+                    and binding.task_id
+                    and current_binding
+                    and current_binding.task_id == binding.task_id
+                )
+                if not preserve_old_binding:
+                    if current_binding:
+                        sessions.update(session_id, revision_sync_error=f"Project initialization failed: {exc}")
+                    else:
+                        sessions.set(session_id, SessionBinding(Mode.PROJECT, revision_sync_error=f"Project initialization failed: {exc}"))
             return _error(exc)
 
     def task_bind(args: dict[str, Any], **kwargs: Any) -> str:
@@ -130,8 +185,63 @@ def register(ctx: Any) -> None:
             snapshot = client.snapshot(task_id)
             task = snapshot["task"]
             sessions.set(str(kwargs.get("session_id") or ""), SessionBinding(
-                Mode.PROJECT, task_id=task_id, workspace=task["workspace"]["path"]
+                Mode.PROJECT,
+                task_id=task_id,
+                workspace=task["workspace"]["path"],
+                workspace_revision=task["workspace"].get("revision"),
             ))
+            return _json(snapshot)
+        except Exception as exc:
+            return _error(exc)
+
+    def task_plan(args: dict[str, Any], **kwargs: Any) -> str:
+        try:
+            task_id = str(args.get("task_id") or "").strip()
+            if not task_id:
+                raise ValueError("adaptive_task_plan requires task_id")
+            session_id = str(kwargs.get("session_id") or "")
+            binding = sessions.get(session_id)
+            if not binding or binding.mode != Mode.PROJECT or binding.task_id != task_id:
+                return _json({"error": {
+                    "code": "PLAN_NOT_BOUND",
+                    "message": "adaptive_task_plan requires a session binding for this task_id.",
+                    "details": {"task_id": task_id},
+                }})
+            before = client.snapshot(task_id)
+            task = before["task"]
+            state = task.get("state")
+            if state not in {"PLANNING", "BLOCKED", "REWORK_REQUIRED", "VERIFIER_DEFECT"}:
+                return _json({"error": {
+                    "code": "PLAN_NOT_ALLOWED",
+                    "message": f"Cannot submit a plan while task is {state}.",
+                    "details": {"task_id": task_id, "state": state},
+                }})
+            if task.get("plan_id") and not str(args.get("repair_reason") or "").strip():
+                return _json({"error": {
+                    "code": "PLAN_REPAIR_REASON_REQUIRED",
+                    "message": "Replacing a committed plan requires repair_reason.",
+                    "details": {"task_id": task_id, "old_plan_id": task.get("plan_id")},
+                }})
+            payload = {key: value for key, value in args.items() if key != "task_id"}
+            payload.setdefault("protocol_version", "1.0")
+            client.action(task_id, "plan", payload)
+            # The action response is not the binding source of truth. Read the
+            # Runtime again so a proxy/cache or a future action response shape
+            # cannot leave this session on a stale workspace revision.
+            snapshot = client.snapshot(task_id)
+            refreshed_task = snapshot["task"]
+            workspace = refreshed_task.get("workspace") or {}
+            sessions.update(
+                session_id,
+                mode=Mode.PROJECT,
+                task_id=task_id,
+                project_state=ProjectState.ACTIVE,
+                workspace=workspace.get("path"),
+                workspace_revision=workspace.get("revision"),
+                active_todo_id=None,
+                revision_sync_error=None,
+            )
+            _log_event("task_plan", task_id=task_id, state=refreshed_task.get("state"), has_task_id=True)
             return _json(snapshot)
         except Exception as exc:
             return _error(exc)
@@ -152,9 +262,17 @@ def register(ctx: Any) -> None:
                 result = client.action(task_id, "events", payload)
                 sessions.update(session_id, task_id=task_id, mode=Mode.PROJECT, project_state=ProjectState.ACTIVE,
                                 active_todo_id=todo_id,
-                                workspace=result["task"]["workspace"]["path"], revision_sync_error=None)
+                                workspace=result["task"]["workspace"]["path"],
+                                workspace_revision=result["task"]["workspace"].get("revision"),
+                                revision_sync_error=None)
                 if sessions.get(session_id) is None:
-                    sessions.set(session_id, SessionBinding(Mode.PROJECT, task_id, todo_id, result["task"]["workspace"]["path"]))
+                    sessions.set(session_id, SessionBinding(
+                        Mode.PROJECT,
+                        task_id,
+                        todo_id,
+                        result["task"]["workspace"]["path"],
+                        result["task"]["workspace"].get("revision"),
+                    ))
                 return _json(result)
             result = client.action(task_id, "events", payload)
             return _json(result)
@@ -206,6 +324,7 @@ def register(ctx: Any) -> None:
     tools: tuple[tuple[str, dict[str, Any], Callable[..., str]], ...] = (
         ("adaptive_task_start", START, task_start),
         ("adaptive_task_bind", BIND, task_bind),
+        ("adaptive_task_plan", PLAN, task_plan),
         ("adaptive_task_event", EVENT, task_event),
         ("adaptive_task_submit_evidence", EVIDENCE, task_evidence),
         ("adaptive_task_evaluate", EVALUATE, task_evaluate),

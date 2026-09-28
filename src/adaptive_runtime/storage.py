@@ -239,14 +239,24 @@ class Storage:
             "todo": todo,
             "acceptance_criteria": criteria,
         })
+        latest_gate = json.loads(gate["payload_json"]) if gate else None
+        if latest_gate is not None:
+            gate_version = latest_gate.get("contract_version")
+            gate_plan_id = latest_gate.get("plan_id")
+            if (gate_version is not None and gate_version != contract["contract_version"]
+                    or gate_plan_id is not None and gate_plan_id != contract.get("plan_id")
+                    or gate_version is None and contract["contract_version"] > 1):
+                latest_gate = None
         return {
             "task": contract,
             "evidence": evidence,
-            "latest_gate": json.loads(gate["payload_json"]) if gate else None,
+            "latest_gate": latest_gate,
         }
 
     def replace_plan(self, contract: TaskContract, event_payload: dict[str, Any]) -> None:
         payload = contract.to_dict()
+        event_payload = dict(event_payload)
+        old_plan_id = event_payload.get("old_plan_id")
         event = {"event_type": "plan_committed", "task_id": contract.task_id, "created_at": utc_now(), "payload": event_payload}
         with self._lock:
             self._append_jsonl(contract.task_id, "events", event)
@@ -276,6 +286,19 @@ class Storage:
                         "UPDATE current_state SET state=?,updated_at=? WHERE task_id=?",
                         (contract.state.value, now, contract.task_id),
                     )
+                    if old_plan_id:
+                        evidence_rows = connection.execute(
+                            "SELECT evidence_id,payload_json FROM evidence_index WHERE task_id=? AND status='verified'",
+                            (contract.task_id,),
+                        ).fetchall()
+                        for evidence_row in evidence_rows:
+                            evidence_payload = json.loads(evidence_row["payload_json"])
+                            evidence_payload["status"] = "stale"
+                            evidence_payload["validation_message"] = "Evidence must be resubmitted after the plan/contract version changed."
+                            connection.execute(
+                                "UPDATE evidence_index SET status='stale',payload_json=? WHERE task_id=? AND evidence_id=?",
+                                (_json(evidence_payload), contract.task_id, evidence_row["evidence_id"]),
+                            )
                     connection.execute(
                         "INSERT INTO events(task_id,event_type,payload_json,created_at) VALUES(?,?,?,?)",
                         (contract.task_id, "plan_committed", _json(event), now),

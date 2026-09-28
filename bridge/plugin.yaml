@@ -10,6 +10,7 @@ provides_tools:
   - adaptive_task_start
   - adaptive_task_bind
   - adaptive_task_event
+  - adaptive_task_plan
   - adaptive_task_submit_evidence
   - adaptive_task_evaluate
   - adaptive_task_close

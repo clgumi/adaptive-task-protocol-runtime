@@ -20,6 +20,7 @@ LOGGER = logging.getLogger("adaptive_task_protocol.bridge")
 
 BRIDGE_TOOLS = {
     "adaptive_task_start", "adaptive_task_bind", "adaptive_task_event",
+    "adaptive_task_plan",
     "adaptive_task_submit_evidence", "adaptive_task_evaluate",
     "adaptive_task_close", "adaptive_task_snapshot",
 }
@@ -50,6 +51,7 @@ class SessionBinding:
     task_id: str | None = None
     active_todo_id: str | None = None
     workspace: str | None = None
+    workspace_revision: str | None = None
     revision_sync_error: str | None = None
     project_state: ProjectState = ProjectState.NONE
     mutation_blocked: bool = False
@@ -139,6 +141,39 @@ def _safe_fallback(reason: str) -> Classification:
     )
 
 
+def _is_explicit_task_continuation(text: str) -> bool:
+    normalized = " ".join(str(text or "").strip().split())
+    return bool(re.fullmatch(
+        r"(?:continue|resume|继续|继续做|接着做|继续这个任务|继续当前任务|继续之前的任务|恢复任务)[.!。！?？]*",
+        normalized,
+        re.IGNORECASE,
+    ))
+
+
+def _is_affirmative_task_continuation_request(text: str) -> bool:
+    normalized = " ".join(str(text or "").strip().split())
+    if _is_explicit_task_continuation(normalized):
+        return True
+
+    verb = r"(?:continue|resume|pick\s+up|carry\s+on)"
+    target = r"(?:(?:the|this|that|active|current|previous|existing|bound|same)\s+)*(?:task|project(?:\s+task)?|work(?:\s+item)?)"
+    affirmative_tails = (
+        rf"(?:\s+(?:with|on|working\s+on)\s+{target}|\s+{target}|\s+where we left off)?"
+    )
+    english_forms = (
+        rf"(?:please\s+)?{verb}{affirmative_tails}",
+        rf"(?:let's|lets)\s+{verb}{affirmative_tails}",
+        rf"(?:can|could|would)\s+you\s+(?:please\s+)?{verb}{affirmative_tails}",
+        rf"i\s+(?:want|would like)\s+to\s+{verb}{affirmative_tails}",
+    )
+    punctuation = r"[.!?。！？]*"
+    if any(re.fullmatch(pattern + punctuation, normalized, re.IGNORECASE) for pattern in english_forms):
+        return True
+
+    chinese = r"(?:请|麻烦)?(?:继续|接着|恢复)(?:一下)?(?:做|执行)?(?:这个|当前|之前|刚才|上次|上一个|上一轮)?(?:的)?(?:任务|项目|工作)(?:吧|一下)?[。！？!?.]*"
+    return bool(re.fullmatch(chinese, normalized))
+
+
 def make_pre_llm_hook(
     registry: SessionRegistry,
     client: Any,
@@ -150,38 +185,48 @@ def make_pre_llm_hook(
 ):
     def pre_llm_call(*, session_id: str = "", user_message: Any = "", conversation_history: Any = None, **_: Any):
         binding = registry.get(session_id)
-        if binding and binding.mode == Mode.PROJECT:
-            if binding.project_state == ProjectState.CANDIDATE or not binding.task_id:
-                return {"context": (
-                    "ADAPTIVE PROJECT MODE REQUIRED: PROJECT CANDIDATE: classification indicates Project, but no Runtime task_id exists. "
-                    "Call adaptive_task_start before any project write; Candidate status alone never creates a Task."
-                )}
-            try:
-                snapshot = client.snapshot(binding.task_id)
-                task = snapshot["task"]
-                return {"context": (
-                    f"ADAPTIVE PROJECT TASK: task_id={binding.task_id}; state={task['state']}; "
-                    f"plan_id={task.get('plan_id')}; active_todo={binding.active_todo_id or 'none'}. "
-                    "Record the active TODO before project writes, submit revision-bound evidence, "
-                    "and call adaptive_task_close only after review."
-                )}
-            except Exception as exc:
-                registry.update(session_id, revision_sync_error=f"Runtime unavailable: {exc}")
-                return {"context": "ADAPTIVE PROJECT MODE: Runtime is unavailable; mutating tools are blocked (fail-closed)."}
         current = str(user_message or "")
         recent = _recent_text(conversation_history)
-        routing_text = current
-        if current.strip().lower() in {"开始", "继续", "执行", "开始做", "继续做", "go", "start", "continue"}:
-            routing_text = f"{recent}\n{current}" if recent else current
-        decision = classify(routing_text)
+        # Classify every inbound turn from its current message before applying
+        # the explicit continuation rule. Durable session bindings are context,
+        # never a substitute for per-turn classification.
+        decision = classify(current)
+        if binding and binding.task_id and _is_affirmative_task_continuation_request(current):
+            decision = Classification(
+                mode=Mode.PROJECT,
+                reason="explicit continuation of the resumable Project Task",
+                confidence=0.99,
+                source="deterministic",
+                reason_codes=("explicit_task_continuation",),
+                task_intent="continue",
+            )
         if decision.needs_subagent:
             if router is not None:
+                active_task = None
+                if binding and binding.task_id:
+                    active_task = {
+                        "task_id": binding.task_id,
+                        "active_todo_id": binding.active_todo_id,
+                    }
                 try:
-                    decision = router.classify(RoutingEnvelope(user_message=current[:6_000], recent_context=recent[-6_000:]))
+                    decision = router.classify(RoutingEnvelope(
+                        user_message=current[:6_000],
+                        recent_context=recent[-6_000:],
+                        active_task=active_task,
+                    ))
                 except Exception as exc:
                     decision = _safe_fallback(type(exc).__name__)
             else:
                 decision = _safe_fallback("subagent_unavailable")
+
+        # Router context may explain references, but it cannot manufacture a
+        # continuation intent that is absent from the current user turn.
+        if (
+            decision.mode == Mode.PROJECT
+            and decision.task_intent == "continue"
+            and not _is_affirmative_task_continuation_request(current)
+        ):
+            decision = _safe_fallback("continuation_not_explicit")
 
         _emit(
             logger,
@@ -196,27 +241,87 @@ def make_pre_llm_hook(
             profile=profile or None,
             surface=surface or None,
         )
+        if decision.mode == Mode.PROJECT and decision.task_intent == "continue" and binding and binding.task_id:
+            try:
+                snapshot = client.snapshot(binding.task_id)
+                task = snapshot["task"]
+                if task.get("state") not in {"CLOSED", "CANCELLED"}:
+                    workspace = task["workspace"]
+                    active_todo_id = next((
+                        item["id"] for item in task.get("todo", [])
+                        if str(item.get("status", "")).upper() == "IN_PROGRESS"
+                    ), None)
+                    registry.update(
+                        session_id,
+                        mode=Mode.PROJECT,
+                        task_id=binding.task_id,
+                        active_todo_id=active_todo_id,
+                        workspace=workspace.get("path"),
+                        workspace_revision=workspace.get("revision"),
+                        project_state=ProjectState.ACTIVE,
+                        mutation_blocked=False,
+                        classification_source=decision.source,
+                        classification_confidence=decision.confidence,
+                    )
+                    return {"context": (
+                        f"ADAPTIVE PROJECT TASK: task_id={binding.task_id}; state={task['state']}; "
+                        f"plan_id={task.get('plan_id')}; active_todo={active_todo_id or 'none'}. "
+                        "This turn explicitly continues the bound Task. Record the active TODO before project writes, "
+                        "submit revision-bound evidence, and call adaptive_task_close only after review."
+                    )}
+            except Exception as exc:
+                registry.update(
+                    session_id,
+                    mode=Mode.PROJECT,
+                    project_state=ProjectState.ACTIVE,
+                    mutation_blocked=True,
+                    revision_sync_error=f"Runtime unavailable: {exc}",
+                    classification_source=decision.source,
+                    classification_confidence=decision.confidence,
+                )
+                return {"context": "ADAPTIVE PROJECT MODE: Runtime is unavailable; mutating tools are blocked (fail-closed)."}
         if decision.mode == Mode.PROJECT:
-            registry.set(session_id, SessionBinding(
-                mode=Mode.PROJECT,
-                project_state=ProjectState.CANDIDATE,
-                classification_source=decision.source,
-                classification_confidence=decision.confidence,
-            ))
+            changes = {
+                "mode": Mode.PROJECT,
+                "project_state": ProjectState.CANDIDATE,
+                "mutation_blocked": False,
+                "classification_source": decision.source,
+                "classification_confidence": decision.confidence,
+            }
+            if binding:
+                # Keep a resumable durable Task id, but do not attach it to this
+                # new Project turn until scope matching or explicit continuation.
+                registry.update(session_id, **changes)
+            else:
+                registry.set(session_id, SessionBinding(**changes))
+            existing = f" Existing task_id={binding.task_id} is resumable but is not attached to this turn." if binding and binding.task_id else " No Runtime task_id exists yet."
             return {"context": (
-                "ADAPTIVE PROJECT MODE REQUIRED: PROJECT CANDIDATE: call adaptive_task_start before modifying files or running mutating commands. "
-                "Classification is not Task creation; the Task must return a valid task_id first."
+                "ADAPTIVE PROJECT MODE REQUIRED: PROJECT CANDIDATE: this turn is classified as Project but has no Task attached. "
+                "Call adaptive_task_start; reuse only if objective, workspace, and non-goals match, otherwise use new_task=true."
+                f"{existing} Candidate status alone never authorizes writes."
             )}
         if decision.mutation_blocked:
-            registry.set(session_id, SessionBinding(
-                mode=Mode.OPERATION,
-                mutation_blocked=True,
+            changes = {
+                "mode": Mode.OPERATION,
+                "project_state": ProjectState.NONE,
+                "mutation_blocked": True,
+                "classification_source": decision.source,
+                "classification_confidence": decision.confidence,
+            }
+            if binding:
+                registry.update(session_id, **changes)
+            else:
+                registry.set(session_id, SessionBinding(**changes))
+            return {"context": "ADAPTIVE SAFE OPERATION: only read-only analysis is allowed until routing succeeds."}
+        if binding:
+            registry.update(
+                session_id,
+                mode=decision.mode,
+                project_state=ProjectState.NONE,
+                mutation_blocked=False,
                 classification_source=decision.source,
                 classification_confidence=decision.confidence,
-            ))
-            return {"context": "ADAPTIVE SAFE OPERATION: only read-only analysis is allowed until routing succeeds."}
-        if binding and binding.mutation_blocked:
-            registry.clear(session_id)
+            )
         return None
     return pre_llm_call
 
@@ -253,8 +358,36 @@ def make_pre_tool_hook(registry: SessionRegistry, client: Any):
             if binding.project_state == ProjectState.CANDIDATE or not binding.task_id:
                 return {"action": "block", "message": "BLOCKED: Project Candidate has no Runtime task_id. Call adaptive_task_start first."}
             if binding.revision_sync_error:
-                return {"action": "block", "message": f"BLOCKED by Adaptive Runtime: {binding.revision_sync_error}"}
-            snapshot = client.snapshot(binding.task_id)
+                try:
+                    # Revision-sync failures are retryable, not a permanent session lock.
+                    # Reconcile against the Runtime's authoritative task snapshot before
+                    # deciding whether the next scoped write must remain blocked.
+                    snapshot = client.snapshot(binding.task_id)
+                    task = snapshot["task"]
+                    workspace = task["workspace"]["path"]
+                    revision = compute_workspace_revision(workspace)
+                    if revision != task["workspace"].get("revision"):
+                        client.action(binding.task_id, "events", {
+                            "event_type": "workspace_revision_changed",
+                            "workspace_revision": revision,
+                            "details": {"reason": "pre_tool_retry_after_revision_sync_error", "active_todo_id": binding.active_todo_id},
+                        })
+                        snapshot = client.snapshot(binding.task_id)
+                        task = snapshot["task"]
+                        if task["workspace"].get("revision") != revision:
+                            raise RuntimeError("Runtime did not persist the reconciled workspace revision.")
+                    registry.update(
+                        session_id,
+                        workspace=workspace,
+                        workspace_revision=revision,
+                        revision_sync_error=None,
+                    )
+                except Exception as exc:
+                    reason = f"Revision sync recovery failed: {type(exc).__name__}: {str(exc)[:240]}"
+                    registry.update(session_id, revision_sync_error=reason)
+                    return {"action": "block", "message": f"BLOCKED by Adaptive Runtime: {reason}"}
+            else:
+                snapshot = client.snapshot(binding.task_id)
             task = snapshot["task"]
             if task["state"] not in {"READY", "EXECUTING"}:
                 return {"action": "block", "message": f"BLOCKED: Runtime task state is {task['state']}; READY or EXECUTING is required."}
@@ -292,7 +425,12 @@ def make_post_tool_hook(registry: SessionRegistry, client: Any):
                     "tool_name": tool_name,
                     "active_todo_id": binding.active_todo_id,
                 })
-            registry.update(session_id, workspace=workspace, revision_sync_error=None)
+            registry.update(
+                session_id,
+                workspace=workspace,
+                workspace_revision=revision,
+                revision_sync_error=None,
+            )
         except Exception as exc:
             registry.update(session_id, revision_sync_error=f"Revision sync failed after {tool_name}: {type(exc).__name__}: {str(exc)[:240]}")
         return None

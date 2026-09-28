@@ -10,7 +10,7 @@
     }, "additionalProperties": false},
     "todo": {"type": "array", "items": {"type": "object", "required": ["id", "title", "depends_on", "verification"]}},
     "acceptance_criteria": {"type": "array", "items": {"type": "object", "required": ["id", "description", "kind", "verifier", "required_evidence"]}},
-    "state": {"enum": ["CREATED", "PLANNING", "READY", "EXECUTING", "SELF_CHECK", "REVIEWING", "REWORK_REQUIRED", "BLOCKED", "GATE_PASSED", "CLOSED", "CANCELLED"]},
+    "state": {"enum": ["CREATED", "PLANNING", "READY", "EXECUTING", "SELF_CHECK", "REVIEWING", "REWORK_REQUIRED", "VERIFIER_DEFECT", "BLOCKED", "GATE_PASSED", "CLOSED", "CANCELLED"]},
     "created_by": {"type": "string"}, "created_at": {"type": "string"}, "plan_id": {"type": ["string", "null"]}
   }
 }

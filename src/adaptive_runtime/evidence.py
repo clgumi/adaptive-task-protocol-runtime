@@ -39,7 +39,12 @@ class EvidenceService:
         state = TaskState(task["state"])
         if state == TaskState.CLOSED:
             raise ConflictError("TASK_CLOSED", "Evidence cannot be added to a closed task.")
-        evidence = Evidence.from_dict({**dict(payload), "task_id": task_id})
+        evidence = Evidence.from_dict({
+            **dict(payload),
+            "task_id": task_id,
+            "plan_id": task.get("plan_id"),
+            "contract_version": task.get("contract_version", 1),
+        })
         criterion = next((item for item in task["acceptance_criteria"] if item["id"] == evidence.criterion_id), None)
         if criterion is None:
             raise RuntimeProtocolError(
@@ -51,6 +56,13 @@ class EvidenceService:
         return evidence.to_dict()
 
     def _verify_integrity(self, evidence: Evidence, task: dict[str, Any], criterion: dict[str, Any]) -> Evidence:
+        current_plan_id = task.get("plan_id")
+        current_contract_version = task.get("contract_version", 1)
+        legacy_unversioned = evidence.plan_id is None and evidence.contract_version is None and current_contract_version == 1
+        if not legacy_unversioned and (evidence.plan_id != current_plan_id or evidence.contract_version != current_contract_version):
+            evidence.status = EvidenceStatus.STALE
+            evidence.validation_message = "Evidence belongs to a different plan or contract version."
+            return evidence
         if evidence.workspace_revision != task["workspace"]["revision"]:
             evidence.status = EvidenceStatus.STALE
             evidence.validation_message = "Evidence revision does not match the current workspace revision."

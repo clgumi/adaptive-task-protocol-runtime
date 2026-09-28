@@ -18,7 +18,7 @@ Task Contract
 
 ## 这个工具解决什么问题
 
-让Hermes可以根据对话内容分为普通对话(chat)、轻量操作(Operation)和项目模式（Project）。普通对话适合即时问答和轻量操作，在处理Project的时候，通过加入过程控制，解决复杂项目通常会遇到的下列问题：
+普通对话适合即时问答和轻量操作，但复杂项目通常会遇到：
 
 - 任务执行到一半后，模型忘记目标、范围或下一步；
 - 多个 Todo 的完成状态只存在于自然语言中，无法可靠恢复；
@@ -93,7 +93,7 @@ Runtime **不会**：
 - 直接执行用户项目命令；
 - 修改 Hermes 上游核心代码。
 
-## 快速开始：Agent 直接操作
+## 快速开始：Agent 操作
 
 Agent 模式适合把 Runtime 接入 Hermes，让当前 Profile 自动执行 Project 的 Plan→Do→Verify→Gate 流程。
 
@@ -312,7 +312,21 @@ Runtime 能恢复持久化任务账本，但正在执行中的 Hermes 子代理�
 
 ## 安全与隐私
 
-Runtime 的 `/health` 不返回任务数据；`/v1` 接口需要 Bearer token；Bridge 默认禁止工具覆盖。
+以下内容只应存在于本机运行环境，不应提交：
+
+```text
+runtime-data/
+SQLite 数据库
+JSONL 事件和子代理记录
+运行日志
+Bearer token
+.env 文件
+本机 Profile 配置
+Windows Startup 脚本
+备份和测试运行产物
+```
+
+Runtime 的 `/health` 不返回任务数据；`/v1` 接口需要 Bearer token；Bridge 默认禁止工具覆盖。请在部署前检查 Git tree 和历史，确认没有本机路径、token、日志或运行数据进入发布内容。
 
 ## 代码布局
 

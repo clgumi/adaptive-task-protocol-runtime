@@ -84,7 +84,15 @@ class GateService:
         target = TaskState.GATE_PASSED if passed else TaskState.BLOCKED if has_blocked else TaskState.REWORK_REQUIRED
         if current != target:
             validate_transition(current, target)
-        result = GateResult(task_id=task_id, passed=passed, state=target, criteria=updated, blocking_criteria=blocking)
+        result = GateResult(
+            task_id=task_id,
+            passed=passed,
+            state=target,
+            criteria=updated,
+            blocking_criteria=blocking,
+            plan_id=task.get("plan_id"),
+            contract_version=task.get("contract_version", 1),
+        )
         self.storage.update_criteria_and_gate(task_id, updated, result)
         return result.to_dict()
 

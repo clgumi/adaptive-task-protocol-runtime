@@ -33,6 +33,7 @@ class TaskState(str, enum.Enum):
     SELF_CHECK = "SELF_CHECK"
     REVIEWING = "REVIEWING"
     REWORK_REQUIRED = "REWORK_REQUIRED"
+    VERIFIER_DEFECT = "VERIFIER_DEFECT"
     BLOCKED = "BLOCKED"
     GATE_PASSED = "GATE_PASSED"
     CLOSED = "CLOSED"
@@ -72,18 +73,19 @@ REQUIRED_EVIDENCE_KEYS = frozenset({
 })
 
 
-TERMINAL_STATES = {TaskState.CLOSED, TaskState.BLOCKED, TaskState.CANCELLED}
+TERMINAL_STATES = {TaskState.CLOSED, TaskState.CANCELLED}
 
 ALLOWED_TRANSITIONS: dict[TaskState, set[TaskState]] = {
     TaskState.CREATED: {TaskState.PLANNING, TaskState.BLOCKED, TaskState.CANCELLED},
     TaskState.PLANNING: {TaskState.READY, TaskState.BLOCKED, TaskState.CANCELLED},
     TaskState.READY: {TaskState.EXECUTING, TaskState.BLOCKED, TaskState.CANCELLED},
-    TaskState.EXECUTING: {TaskState.SELF_CHECK, TaskState.REVIEWING, TaskState.BLOCKED, TaskState.CANCELLED},
-    TaskState.SELF_CHECK: {TaskState.REVIEWING, TaskState.REWORK_REQUIRED, TaskState.BLOCKED, TaskState.CANCELLED},
-    TaskState.REVIEWING: {TaskState.REWORK_REQUIRED, TaskState.GATE_PASSED, TaskState.BLOCKED, TaskState.CANCELLED},
-    TaskState.REWORK_REQUIRED: {TaskState.EXECUTING, TaskState.BLOCKED, TaskState.CANCELLED},
+    TaskState.EXECUTING: {TaskState.SELF_CHECK, TaskState.REVIEWING, TaskState.VERIFIER_DEFECT, TaskState.BLOCKED, TaskState.CANCELLED},
+    TaskState.SELF_CHECK: {TaskState.REVIEWING, TaskState.REWORK_REQUIRED, TaskState.VERIFIER_DEFECT, TaskState.BLOCKED, TaskState.CANCELLED},
+    TaskState.REVIEWING: {TaskState.REWORK_REQUIRED, TaskState.VERIFIER_DEFECT, TaskState.GATE_PASSED, TaskState.BLOCKED, TaskState.CANCELLED},
+    TaskState.REWORK_REQUIRED: {TaskState.EXECUTING, TaskState.READY, TaskState.VERIFIER_DEFECT, TaskState.BLOCKED, TaskState.CANCELLED},
     TaskState.GATE_PASSED: {TaskState.CLOSED, TaskState.REWORK_REQUIRED, TaskState.BLOCKED},
-    TaskState.BLOCKED: {TaskState.PLANNING, TaskState.READY, TaskState.EXECUTING, TaskState.CANCELLED},
+    TaskState.BLOCKED: {TaskState.PLANNING, TaskState.READY, TaskState.EXECUTING, TaskState.VERIFIER_DEFECT, TaskState.CANCELLED},
+    TaskState.VERIFIER_DEFECT: {TaskState.READY, TaskState.BLOCKED, TaskState.CANCELLED},
     TaskState.CLOSED: set(),
     TaskState.CANCELLED: set(),
 }
@@ -302,6 +304,8 @@ class Evidence:
     command: str | None = None
     exit_code: int | None = None
     metadata: dict[str, Any] = field(default_factory=dict)
+    plan_id: str | None = None
+    contract_version: int | None = None
     status: EvidenceStatus = EvidenceStatus.PENDING
     validation_message: str | None = None
 
@@ -312,6 +316,9 @@ class Evidence:
         exit_code = raw.get("exit_code")
         if exit_code is not None and (not isinstance(exit_code, int) or isinstance(exit_code, bool)):
             raise RuntimeProtocolError("SCHEMA_VALIDATION_FAILED", "exit_code must be an integer.")
+        contract_version = raw.get("contract_version")
+        if contract_version is not None and (not isinstance(contract_version, int) or isinstance(contract_version, bool) or contract_version < 1):
+            raise RuntimeProtocolError("SCHEMA_VALIDATION_FAILED", "evidence contract_version must be a positive integer.")
         metadata = raw.get("metadata", {})
         if not isinstance(metadata, dict):
             raise RuntimeProtocolError("SCHEMA_VALIDATION_FAILED", "metadata must be an object.")
@@ -332,6 +339,8 @@ class Evidence:
             command=raw.get("command"),
             exit_code=exit_code,
             metadata=dict(metadata),
+            plan_id=raw.get("plan_id"),
+            contract_version=contract_version,
             status=status,
             validation_message=raw.get("validation_message"),
         )
@@ -351,6 +360,8 @@ class GateResult:
     criteria: list[dict[str, Any]]
     blocking_criteria: list[str]
     evaluated_at: str = field(default_factory=utc_now)
+    plan_id: str | None = None
+    contract_version: int | None = None
     protocol_version: str = PROTOCOL_VERSION
 
     def to_dict(self) -> dict[str, Any]:
@@ -362,6 +373,8 @@ class GateResult:
             "criteria": self.criteria,
             "blocking_criteria": self.blocking_criteria,
             "evaluated_at": self.evaluated_at,
+            "plan_id": self.plan_id,
+            "contract_version": self.contract_version,
         }
 
 

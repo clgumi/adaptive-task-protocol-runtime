@@ -15,7 +15,8 @@
       "status": {"enum": ["PASS", "FAIL", "NOT_RUN", "BLOCKED", "WAIVED", "PASS_UNVERIFIED"]},
       "waiver": {"type": "object", "required": ["reason", "approved_by"]}
     }}},
-    "ambiguities": {"type": "array", "items": {"type": "string"}}, "needs_human": {"type": "boolean"}
+    "ambiguities": {"type": "array", "items": {"type": "string"}}, "needs_human": {"type": "boolean"},
+    "repair_reason": {"type": "string", "minLength": 1, "maxLength": 2000}
   }
 }
 
